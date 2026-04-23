@@ -74,7 +74,14 @@ jobs:
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
 
           if [[ "$BRANCH" == "master" ]]; then
-            echo "tag=${{ steps.semver.outputs.new_tag }}" >> $GITHUB_OUTPUT
+            TAG="${{ steps.semver.outputs.new_tag }}"
+
+            # 🔥 Fallback if semver fails
+            if [ -z "$TAG" ]; then
+              TAG="v0.0.0-${SHORT_SHA}"
+            fi
+
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
             echo "push=true" >> $GITHUB_OUTPUT
 
           elif [[ "$BRANCH" == "qa" ]]; then
