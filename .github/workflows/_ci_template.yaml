@@ -230,6 +230,8 @@ jobs:
 
       - run: docker load -i image.tar
 
+      - run: echo ${{ needs.prepare.outputs.tag }}
+
       - uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.service_name }}:${{ needs.prepare.outputs.tag }}
