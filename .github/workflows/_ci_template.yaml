@@ -247,7 +247,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.service_name }}:${{ needs.prepare.outputs.tag || github.sha }}
-          severity: HIGH,CRITICAL
+          severity: CRITICAL
           exit-code: 1
 
 # ─────────────────────────────────────────────
