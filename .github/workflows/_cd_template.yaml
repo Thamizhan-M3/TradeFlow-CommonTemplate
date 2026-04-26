@@ -39,6 +39,10 @@ on:
         required: false
         type: string
         default: "helm/tradeflow"
+      branch:
+        description: "The source branch from the service repository (e.g. 'master' or 'qa')"
+        required: true
+        type: string
 
     secrets:
       CD_PAT:
@@ -58,7 +62,7 @@ jobs:
       - name: Resolve target values file
         id: resolve
         run: |
-          BRANCH="${{ github.ref_name }}"
+          BRANCH="${{ inputs.branch }}"
 
           if [[ "$BRANCH" == "master" ]]; then
             echo "values_file=values-prod.yaml" >> $GITHUB_OUTPUT
@@ -168,7 +172,7 @@ jobs:
           | **Tag**      | \`${TAG}\`                       |
           | **Env**      | \`${ENV_LABEL}\`                 |
           | **Values**   | \`${{ steps.resolve.outputs.values_file }}\` |
-          | **Branch**   | \`${{ github.ref_name }}\`       |
+          | **Branch**   | \`${{ inputs.branch }}\`       |
           | **Commit**   | \`${{ github.sha }}\`            |
 
           > Triggered automatically by the CI pipeline after a successful build and push.
