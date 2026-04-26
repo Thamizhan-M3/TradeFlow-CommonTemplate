@@ -1,0 +1,170 @@
+name: Common_CD
+
+# ─────────────────────────────────────────────
+# Reusable CD template – called from each
+# microservice's own cd.yaml workflow.
+#
+# Responsibilities:
+#   master branch → patch values-prod.yaml
+#   qa     branch → patch values-dev.yaml
+#
+# The caller must supply:
+#   • service_name  – the top-level YAML key in the values file
+#                     (e.g. "user", "stock", "trading")
+#   • image_tag     – the Docker image tag produced by the CI run
+#   • helm_repo     – full <org>/<repo> of the Helm chart repository
+#                     (e.g. "Thamizhan-M3/Tradeflow-Kubernetes-Manifests")
+#   • values_file_path – relative path inside helm_repo to the
+#                        parent chart directory
+#                        (e.g. "helm/tradeflow")
+# ─────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Top-level key in values YAML (e.g. 'user', 'stock')"
+        required: true
+        type: string
+      image_tag:
+        description: "Docker image tag produced by CI (e.g. 'v1.2.3' or 'qa-abc1234')"
+        required: true
+        type: string
+      helm_repo:
+        description: "GitHub org/repo containing the Helm chart (e.g. 'Thamizhan-M3/Tradeflow-Kubernetes-Manifests')"
+        required: true
+        type: string
+      values_file_path:
+        description: "Relative path to the parent chart directory inside helm_repo (e.g. 'helm/tradeflow')"
+        required: false
+        type: string
+        default: "helm/tradeflow"
+
+    secrets:
+      CD_PAT:
+        description: "GitHub PAT with repo write permission for the Helm chart repository"
+        required: true
+
+# ─────────────────────────────────────────────
+# JOB: UPDATE HELM VALUES
+# ─────────────────────────────────────────────
+jobs:
+  update-helm-values:
+    name: "Patch Helm values (${{ github.ref_name }})"
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Determine which values file to patch ───────────────────────
+      - name: Resolve target values file
+        id: resolve
+        run: |
+          BRANCH="${{ github.ref_name }}"
+
+          if [[ "$BRANCH" == "master" ]]; then
+            echo "values_file=values-prod.yaml" >> $GITHUB_OUTPUT
+            echo "env_label=prod"               >> $GITHUB_OUTPUT
+            echo "pr_branch=cd/update-${{ inputs.service_name }}-prod-${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "qa" ]]; then
+            echo "values_file=values-dev.yaml"  >> $GITHUB_OUTPUT
+            echo "env_label=dev"                >> $GITHUB_OUTPUT
+            echo "pr_branch=cd/update-${{ inputs.service_name }}-dev-${{ inputs.image_tag }}"  >> $GITHUB_OUTPUT
+          else
+            echo "❌ CD workflow triggered on an unsupported branch: $BRANCH"
+            exit 1
+          fi
+
+      # ── 2. Checkout the Helm chart repository ────────────────────────
+      - name: Checkout Helm chart repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.helm_repo }}
+          token: ${{ secrets.CD_PAT }}
+          fetch-depth: 0
+
+      # ── 3. Install yq (lightweight YAML patcher) ─────────────────────
+      - name: Install yq
+        run: |
+          YQ_VERSION="v4.44.2"
+          wget -qO /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+          yq --version
+
+      # ── 4. Patch the image tag in the target values file ─────────────
+      - name: Patch image tag
+        id: patch
+        env:
+          VALUES_FILE: "${{ inputs.values_file_path }}/${{ steps.resolve.outputs.values_file }}"
+          SERVICE: "${{ inputs.service_name }}"
+          TAG: "${{ inputs.image_tag }}"
+        run: |
+          echo "📄 Patching $VALUES_FILE"
+          echo "   $SERVICE.image.tag  →  $TAG"
+
+          OLD_TAG=$(yq e ".${SERVICE}.image.tag" "$VALUES_FILE")
+          echo "   current tag: $OLD_TAG"
+
+          yq e -i ".${SERVICE}.image.tag = \"${TAG}\"" "$VALUES_FILE"
+
+          NEW_TAG=$(yq e ".${SERVICE}.image.tag" "$VALUES_FILE")
+          echo "   new tag    : $NEW_TAG"
+
+          if [[ "$OLD_TAG" == "$NEW_TAG" ]]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  Tag unchanged, skipping commit."
+          else
+            echo "changed=true"  >> $GITHUB_OUTPUT
+          fi
+
+      # ── 5. Skip remainder if nothing changed ─────────────────────────
+      - name: Skip if no change
+        if: steps.patch.outputs.changed == 'false'
+        run: |
+          echo "Tag was already up-to-date. Nothing to commit."
+
+      # ── 6. Create a new branch, commit, and push ─────────────────────
+      - name: Commit and push changes
+        if: steps.patch.outputs.changed == 'true'
+        env:
+          PR_BRANCH: ${{ steps.resolve.outputs.pr_branch }}
+          VALUES_FILE: "${{ inputs.values_file_path }}/${{ steps.resolve.outputs.values_file }}"
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$PR_BRANCH"
+
+          git add "$VALUES_FILE"
+          git commit -m "chore(cd): bump ${{ inputs.service_name }} → ${{ inputs.image_tag }} in ${{ steps.resolve.outputs.values_file }} [skip ci]"
+
+          git push origin "$PR_BRANCH"
+
+      # ── 7. Open a Pull Request into main ─────────────────────────────
+      - name: Open Pull Request
+        if: steps.patch.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CD_PAT }}
+          PR_BRANCH: ${{ steps.resolve.outputs.pr_branch }}
+          ENV_LABEL: ${{ steps.resolve.outputs.env_label }}
+          TAG: ${{ inputs.image_tag }}
+          SERVICE: ${{ inputs.service_name }}
+        run: |
+          gh pr create \
+            --repo "${{ inputs.helm_repo }}" \
+            --base main \
+            --head "$PR_BRANCH" \
+            --title "chore(cd): [${ENV_LABEL^^}] bump ${SERVICE} → ${TAG}" \
+            --body "## 🚀 Automated Helm Image Tag Update
+
+          | Field        | Value                            |
+          |--------------|----------------------------------|
+          | **Service**  | \`${SERVICE}\`                   |
+          | **Tag**      | \`${TAG}\`                       |
+          | **Env**      | \`${ENV_LABEL}\`                 |
+          | **Values**   | \`${{ steps.resolve.outputs.values_file }}\` |
+          | **Branch**   | \`${{ github.ref_name }}\`       |
+          | **Commit**   | \`${{ github.sha }}\`            |
+
+          > Triggered automatically by the CI pipeline after a successful build and push.
+          > Review and merge to deploy to the **${ENV_LABEL^^}** environment via ArgoCD." \
+            --label "automated,cd,${ENV_LABEL}"
