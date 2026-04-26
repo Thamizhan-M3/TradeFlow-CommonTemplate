@@ -148,9 +148,15 @@ jobs:
           ENV_LABEL: ${{ steps.resolve.outputs.env_label }}
           TAG: ${{ inputs.image_tag }}
           SERVICE: ${{ inputs.service_name }}
+          REPO: "${{ inputs.helm_repo }}"
         run: |
+          # Ensure labels exist in the target repo before applying them
+          gh label create "automated" --repo "$REPO" --color "0E8A16" --description "Automated PR" || true
+          gh label create "cd" --repo "$REPO" --color "FBCA04" --description "Continuous Deployment" || true
+          gh label create "$ENV_LABEL" --repo "$REPO" --color "1D76DB" --description "Environment: $ENV_LABEL" || true
+
           gh pr create \
-            --repo "${{ inputs.helm_repo }}" \
+            --repo "$REPO" \
             --base main \
             --head "$PR_BRANCH" \
             --title "chore(cd): [${ENV_LABEL^^}] bump ${SERVICE} → ${TAG}" \
